@@ -1,0 +1,15 @@
+[Unit]
+Description=Nutritional Assistant Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/nutritional-assistant
+EnvironmentFile=/home/ubuntu/nutritional-assistant/.env
+ExecStart=/home/ubuntu/nutritional-assistant/venv/bin/python src/main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

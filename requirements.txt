@@ -1,0 +1,9 @@
+python-telegram-bot==20.7
+anthropic>=0.40.0
+sqlalchemy>=2.0
+psycopg2-binary
+apscheduler>=3.10
+httpx
+python-dotenv
+pytz
+Pillow
