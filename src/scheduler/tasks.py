@@ -69,7 +69,8 @@ async def evening_summary(bot) -> None:
         logger.error("evening_summary: DB error fetching categories: %s", e)
         return
 
-    if not all(cat in logged for cat in REQUIRED_MEAL_CATEGORIES):
+    if not logged:
+        logger.info("evening_summary: no meals logged today, skipping summary")
         return
 
     try:
