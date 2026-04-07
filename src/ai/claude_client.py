@@ -1,12 +1,16 @@
 import asyncio
 import json
+import logging
 import anthropic
+
+logger = logging.getLogger(__name__)
 from config import ANTHROPIC_API_KEY
 from ai.prompts import (
     system_prompt_meal_parsing,
     system_prompt_label_extraction,
     system_prompt_qa,
     system_prompt_daily_summary,
+    system_prompt_extract_meals,
 )
 from datetime import date
 
@@ -46,15 +50,22 @@ def _create_vision_message(system: str, image_bytes: bytes, media_type: str) -> 
     return response.content[0].text
 
 
-def _strip_code_fence(raw: str) -> str:
-    clean = raw.strip()
-    if clean.startswith("```"):
-        parts = clean.split("```")
-        if len(parts) >= 2:
-            clean = parts[1]
-            if clean.startswith("json"):
-                clean = clean[4:]
-    return clean.strip()
+def _extract_json_object(raw: str) -> str:
+    """Extract the first complete JSON object from a string, ignoring surrounding prose."""
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError("No JSON object found in response")
+    return raw[start:end + 1]
+
+
+def _extract_json_array(raw: str) -> str:
+    """Extract the first complete JSON array from a string, ignoring surrounding prose."""
+    start = raw.find("[")
+    end = raw.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError("No JSON array found in response")
+    return raw[start:end + 1]
 
 
 async def parse_meal_text(text: str) -> list[dict]:
@@ -62,8 +73,9 @@ async def parse_meal_text(text: str) -> list[dict]:
     system = system_prompt_meal_parsing(today)
     raw = await asyncio.to_thread(_create_text_message, system, text, HAIKU)
     try:
-        return json.loads(_strip_code_fence(raw))
+        return json.loads(_extract_json_array(raw))
     except Exception:
+        logger.error("parse_meal_text failed to parse JSON. Raw: %s", raw[:500])
         return []
 
 
@@ -71,21 +83,12 @@ async def extract_label_from_image(image_bytes: bytes, media_type: str = "image/
     system = system_prompt_label_extraction()
     raw = await asyncio.to_thread(_create_vision_message, system, image_bytes, media_type)
     try:
-        lines = raw.strip().split("\n")
-        json_lines = []
-        unreadable_fields = []
-        for line in lines:
-            if line.startswith("UNREADABLE:"):
-                unreadable_text = line[len("UNREADABLE:"):].strip()
-                unreadable_fields = [f.strip() for f in unreadable_text.split(",") if f.strip()]
-            else:
-                json_lines.append(line)
-        json_str = _strip_code_fence("\n".join(json_lines))
-        result = json.loads(json_str)
-        if unreadable_fields:
-            result["unreadable_fields"] = unreadable_fields
+        result = json.loads(_extract_json_object(raw))
+        if "unreadable_fields" not in result:
+            result["unreadable_fields"] = []
         return result
     except Exception:
+        logger.error("extract_label_from_image failed to parse JSON. Raw: %s", raw[:500])
         return {"error": "Could not parse label response", "raw": raw}
 
 
@@ -93,6 +96,18 @@ async def answer_question(question: str, meal_history: str) -> str:
     today = date.today()
     system = system_prompt_qa(today, meal_history)
     return await asyncio.to_thread(_create_text_message, system, question, HAIKU)
+
+
+async def extract_meals_from_conversation(conversation: str) -> list[dict]:
+    """Extract and return any food items with nutrition data from a Q&A conversation."""
+    today = date.today()
+    system = system_prompt_extract_meals(today)
+    raw = await asyncio.to_thread(_create_text_message, system, conversation, HAIKU)
+    try:
+        return json.loads(_extract_json_array(raw))
+    except Exception:
+        logger.error("extract_meals_from_conversation failed to parse JSON. Raw: %s", raw[:500])
+        return []
 
 
 async def generate_daily_summary(totals: dict) -> str:
