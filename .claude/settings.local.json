@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(python -c ':*)",
+      "Bash(python:*)",
+      "Bash(find:*)",
+      "Bash(ls README*)"
+    ]
+  }
+}

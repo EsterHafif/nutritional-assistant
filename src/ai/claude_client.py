@@ -84,8 +84,9 @@ async def extract_label_from_image(image_bytes: bytes, media_type: str = "image/
     raw = await asyncio.to_thread(_create_vision_message, system, image_bytes, media_type)
     try:
         result = json.loads(_extract_json_object(raw))
-        if "unreadable_fields" not in result:
-            result["unreadable_fields"] = []
+        result.setdefault("unreadable_fields", [])
+        result.setdefault("per_serving", None)
+        result.setdefault("per_100g", None)
         return result
     except Exception:
         logger.error("extract_label_from_image failed to parse JSON. Raw: %s", raw[:500])

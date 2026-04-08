@@ -84,6 +84,8 @@ def search_off(name: str) -> Optional[dict]:
                 "source_id": product.get("code", ""),
             }
             result.update(_parse_nutriments(nutriments, serving_size_g))
+            result["values_per"] = "per_100g"
+            result["data"] = product
             return result
 
         return None

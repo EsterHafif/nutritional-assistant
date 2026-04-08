@@ -37,11 +37,13 @@ def system_prompt_label_extraction() -> str:
     return """You are extracting nutritional data from a food label photo. The label may be in Hebrew, English, or both.
 
 Column handling:
-- Israeli/Hebrew labels often show TWO columns side by side: right column = "100 גרם" (per 100g), left column = "בגביע" or "במנה" (per serving/container).
-- ALWAYS extract the PER SERVING/CONTAINER column (בגביע / במנה) — the LEFT column on Hebrew labels.
-- NEVER use the per-100g column values.
-- To find the serving size in grams: if it is written on the label use it; otherwise calculate it as (per-serving calories / per-100g calories) × 100.
-- If only one column exists, use that column.
+- Israeli/Hebrew labels often show TWO columns side by side:
+  right column = "100 גרם" (per 100g),
+  left column = "בגביע" / "במנה" (per serving/container).
+- Extract BOTH columns when both are present.
+- If only one column exists, fill that one and set the other to null.
+- serving_size_g: if it is written on the label use it; otherwise, if both columns are present,
+  calculate it as (per-serving calories / per-100g calories) × 100.
 
 Product name:
 - Look for the product name anywhere on the visible label — top, side, or any text that identifies the product.
@@ -59,20 +61,37 @@ Return this exact structure:
   "product_name": string or null,
   "brand": string or null,
   "serving_size_g": number or null,
-  "calories": number or null,
-  "protein_g": number or null,
-  "carbs_g": number or null,
-  "fat_g": number or null,
-  "fiber_g": number or null,
-  "sugar_g": number or null,
-  "saturated_fat_g": number or null,
-  "calcium_mg": number or null,
-  "magnesium_mg": number or null,
-  "iron_mg": number or null,
-  "sodium_mg": number or null,
-  "potassium_mg": number or null,
+  "per_serving": {
+    "calories": number or null,
+    "protein_g": number or null,
+    "carbs_g": number or null,
+    "fat_g": number or null,
+    "fiber_g": number or null,
+    "sugar_g": number or null,
+    "saturated_fat_g": number or null,
+    "calcium_mg": number or null,
+    "magnesium_mg": number or null,
+    "iron_mg": number or null,
+    "sodium_mg": number or null,
+    "potassium_mg": number or null
+  },
+  "per_100g": {
+    "calories": number or null,
+    "protein_g": number or null,
+    "carbs_g": number or null,
+    "fat_g": number or null,
+    "fiber_g": number or null,
+    "sugar_g": number or null,
+    "saturated_fat_g": number or null,
+    "calcium_mg": number or null,
+    "magnesium_mg": number or null,
+    "iron_mg": number or null,
+    "sodium_mg": number or null,
+    "potassium_mg": number or null
+  },
   "unreadable_fields": []
-}"""
+}
+- If a column is entirely absent from the label, set that whole object to null."""
 
 
 def system_prompt_qa(today: date, meal_history: str) -> str:

@@ -70,6 +70,8 @@ def search_usda(name: str) -> Optional[dict]:
             "serving_size_g": food.get("servingSize"),
         }
         result.update(nutrients)
+        result["values_per"] = "per_100g"
+        result["data"] = food
         return result
     except Exception:
         return None

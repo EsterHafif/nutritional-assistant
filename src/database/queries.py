@@ -1,5 +1,6 @@
 from datetime import date as date_type
 from typing import Optional
+from sqlalchemy import case
 from .models import FoodDBItem, MealLog, ConversationHistory
 from .db import get_session
 
@@ -32,9 +33,12 @@ def add_meal_log(meal_data: dict) -> MealLog:
         return meal
 
 
-def search_food_db(name: str) -> Optional[FoodDBItem]:
+def search_food_db(name: str, prefer: Optional[str] = None) -> Optional[FoodDBItem]:
     with get_session() as s:
-        item = s.query(FoodDBItem).filter(FoodDBItem.product_name.ilike(f"%{name}%")).first()
+        q = s.query(FoodDBItem).filter(FoodDBItem.product_name.ilike(f"%{name}%"))
+        if prefer:
+            q = q.order_by(case((FoodDBItem.values_per == prefer, 0), else_=1))
+        item = q.first()
         if item:
             s.expunge(item)
         return item
@@ -63,6 +67,25 @@ def get_recent_conversation(limit: int = 5) -> list[dict]:
 def add_conversation_entry(message: str, response: str) -> None:
     with get_session() as s:
         s.add(ConversationHistory(message_text=message, response_text=response))
+        # Keep only the last 200 entries
+        subq = (
+            s.query(ConversationHistory.id)
+            .order_by(ConversationHistory.created_at.desc())
+            .limit(200)
+            .subquery()
+        )
+        s.query(ConversationHistory).filter(
+            ConversationHistory.id.notin_(subq)
+        ).delete(synchronize_session=False)
+
+
+def get_steady_meals() -> list[dict]:
+    fields = ["id", "product_name", "calories", "protein_g", "carbs_g", "fat_g",
+              "fiber_g", "sugar_g", "calcium_mg", "magnesium_mg", "iron_mg",
+              "serving_size_g", "values_per", "source"]
+    with get_session() as s:
+        rows = s.query(FoodDBItem).filter(FoodDBItem.source == "steady_meal").all()
+        return [{f: getattr(r, f, None) for f in fields} for r in rows]
 
 
 def get_meals_for_date(meal_date: date_type) -> list[dict]:

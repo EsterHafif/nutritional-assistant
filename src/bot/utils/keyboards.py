@@ -15,6 +15,13 @@ def save_to_db_keyboard() -> InlineKeyboardMarkup:
     ]])
 
 
+def steady_meal_save_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("כן, שמרי 📌", callback_data="steady_save_yes"),
+        InlineKeyboardButton("לא תודה", callback_data="steady_save_no"),
+    ]])
+
+
 def category_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🌅 בוקר", callback_data="cat_בוקר"),

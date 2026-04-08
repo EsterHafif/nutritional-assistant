@@ -33,6 +33,7 @@ class FoodDBItem(Base):
     vitamin_b12_mcg = Column(Float)
     folate_mcg = Column(Float)
     source = Column(String(50))
+    values_per = Column(String(15))
     source_id = Column(String(255))
     data = Column(JSONB)
     created_at = Column(DateTime, default=datetime.utcnow)

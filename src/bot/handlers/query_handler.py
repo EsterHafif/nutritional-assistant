@@ -82,24 +82,31 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         conversation_text = f"User: {question}\nAssistant: {answer}"
         extracted = await extract_meals_from_conversation(conversation_text)
-        today = date.today()
-        for item in extracted:
-            meal_data = {
-                "meal_name": item.get("meal_name", ""),
-                "meal_category": item.get("meal_category"),
-                "meal_date": today,
-                "meal_time": datetime.now().time(),
-                "calories": item.get("calories"),
-                "protein_g": item.get("protein_g"),
-                "carbs_g": item.get("carbs_g"),
-                "fat_g": item.get("fat_g"),
-                "fiber_g": item.get("fiber_g"),
-                "calcium_mg": item.get("calcium_mg"),
-                "iron_mg": item.get("iron_mg"),
-                "source": "estimated",
-                "confidence_score": item.get("confidence_score", 0.75),
-            }
-            if meal_data["meal_name"]:
+        if extracted:
+            already_logged_names = {m["meal_name"].strip().lower() for m in meals if m.get("meal_name")}
+            for item in extracted:
+                meal_name = item.get("meal_name", "").strip()
+                if not meal_name:
+                    continue
+                # Skip if this food name is already in today's log (avoid duplicates)
+                if meal_name.lower() in already_logged_names:
+                    continue
+                meal_data = {
+                    "meal_name": meal_name,
+                    "meal_category": item.get("meal_category"),
+                    "meal_date": date.today(),
+                    "meal_time": datetime.now().time(),
+                    "calories": item.get("calories"),
+                    "protein_g": item.get("protein_g"),
+                    "carbs_g": item.get("carbs_g"),
+                    "fat_g": item.get("fat_g"),
+                    "fiber_g": item.get("fiber_g"),
+                    "calcium_mg": item.get("calcium_mg"),
+                    "iron_mg": item.get("iron_mg"),
+                    "source": "estimated",
+                    "confidence_score": item.get("confidence_score", 0.75),
+                }
                 add_meal_log(meal_data)
+                already_logged_names.add(meal_name.lower())
     except Exception as e:
         logger.error("extract_meals_from_conversation failed: %s", e)
