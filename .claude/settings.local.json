@@ -5,7 +5,8 @@
       "Bash(python -c ':*)",
       "Bash(python:*)",
       "Bash(find:*)",
-      "Bash(ls README*)"
+      "Bash(ls README*)",
+      "Bash(scp:*)"
     ]
   }
 }

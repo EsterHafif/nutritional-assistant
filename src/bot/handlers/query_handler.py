@@ -4,14 +4,15 @@ import re
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import ALLOWED_TELEGRAM_USER_ID
+from config import ALLOWED_TELEGRAM_USER_ID, MEAL_CATEGORIES
 from datetime import date, datetime
-from database.queries import get_meals_for_date, get_recent_conversation, add_conversation_entry, add_meal_log
-from ai.claude_client import answer_question, extract_meals_from_conversation
+from database.queries import get_meals_for_date, get_recent_conversation, add_conversation_entry, add_meal_log, get_daily_totals
+from ai.claude_client import answer_question, extract_meals_from_conversation, generate_daily_summary
 
 logger = logging.getLogger(__name__)
 
 HEBREW_CHARS = re.compile(r"[\u0590-\u05FF]")
+_SUMMARY_KEYWORDS = re.compile(r"סיכום|summarize|summary|סכמי|תסכמי", re.IGNORECASE)
 
 
 def _build_meal_history(meals: list, recent_convos: list) -> str:
@@ -52,6 +53,33 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         logger.error("get_meals_for_date failed: %s", e)
         meals = []
+
+    # Route summary requests to the dedicated summary generator
+    if _SUMMARY_KEYWORDS.search(question):
+        try:
+            totals = get_daily_totals(today)
+        except Exception as e:
+            logger.error("get_daily_totals failed: %s", e)
+            totals = {}
+        meals_by_category: dict = {}
+        for cat in MEAL_CATEGORIES:
+            items = [
+                {"meal_name": m["meal_name"], "calories": m["calories"], "protein_g": m["protein_g"]}
+                for m in meals if m.get("meal_category") == cat
+            ]
+            if items:
+                meals_by_category[cat] = items
+        try:
+            answer = await generate_daily_summary(totals, meals_by_category)
+        except Exception as e:
+            logger.error("generate_daily_summary failed: %s", e)
+            answer = "מצטערת, לא הצלחתי ליצור סיכום כרגע."
+        await update.message.reply_text(answer)
+        try:
+            add_conversation_entry(question, answer)
+        except Exception as e:
+            logger.error("add_conversation_entry failed: %s", e)
+        return
 
     try:
         recent_convos = get_recent_conversation(limit=5)

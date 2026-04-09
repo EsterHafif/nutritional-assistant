@@ -12,15 +12,41 @@ def format_meal_logged(category: str, items: list[dict], lang: str) -> str:
         return ""
     total_cal = sum(i.get("calories") or 0 for i in items)
     total_prot = sum(i.get("protein_g") or 0 for i in items)
-    names = ", ".join(i.get("meal_name", "") for i in items)
-    estimated = any(i.get("estimated") or i.get("source") == "claude_estimated" for i in items)
 
     if lang == "he":
-        flag = " (משוער)" if estimated else ""
-        return f"✓ {category}: {names}{flag}\n{round(total_cal)} קל' | {round(total_prot)}g חלבון"
+        lines = [f"✓ {category}:"]
+        for i in items:
+            name = i.get("meal_name", "")
+            cal = i.get("calories")
+            prot = i.get("protein_g")
+            estimated = i.get("estimated") or i.get("source") == "claude_estimated"
+            marker = " (משוער)" if estimated else ""
+            parts = []
+            if cal is not None:
+                parts.append(f"{round(cal)} קל'")
+            if prot is not None:
+                parts.append(f"{round(prot, 1)}g חלבון")
+            nutrition = " | ".join(parts)
+            lines.append(f"• {name}{marker}: {nutrition}" if nutrition else f"• {name}{marker}")
+        lines.append(f"סה\"כ: {round(total_cal)} קל' | {round(total_prot, 1)}g חלבון")
+        return "\n".join(lines)
     else:
-        flag = " (estimated)" if estimated else ""
-        return f"✓ {category}: {names}{flag}\n{round(total_cal)} kcal | {round(total_prot)}g protein"
+        lines = [f"✓ {category}:"]
+        for i in items:
+            name = i.get("meal_name", "")
+            cal = i.get("calories")
+            prot = i.get("protein_g")
+            estimated = i.get("estimated") or i.get("source") == "claude_estimated"
+            marker = " (estimated)" if estimated else ""
+            parts = []
+            if cal is not None:
+                parts.append(f"{round(cal)} kcal")
+            if prot is not None:
+                parts.append(f"{round(prot, 1)}g protein")
+            nutrition = " | ".join(parts)
+            lines.append(f"• {name}{marker}: {nutrition}" if nutrition else f"• {name}{marker}")
+        lines.append(f"Total: {round(total_cal)} kcal | {round(total_prot, 1)}g protein")
+        return "\n".join(lines)
 
 
 def format_daily_totals(totals: dict, lang: str) -> str:

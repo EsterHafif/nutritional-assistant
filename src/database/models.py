@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Date, Time, Text, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, Float, Date, Time, Text, ForeignKey, DateTime, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
@@ -61,7 +61,24 @@ class MealLog(Base):
     food_db_item_id = Column(Integer, ForeignKey("food_db_items.id"))
     original_photo_path = Column(String(500))
     notes = Column(Text)
+    data = Column(JSONB)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ExerciseLog(Base):
+    __tablename__ = "exercise_log"
+    id = Column(Integer, primary_key=True)
+    exercise_date = Column(Date, nullable=False)
+    exercise_time = Column(Time)
+    activity = Column(String(255), nullable=False)
+    duration_min = Column(Integer)
+    calories = Column(Integer)
+    source = Column(String(50), default="screenshot")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    __table_args__ = (
+        UniqueConstraint("exercise_date", "exercise_time", "activity", name="uq_exercise_dedupe"),
+        Index("ix_exercise_log_date", "exercise_date"),
+    )
 
 
 class ConversationHistory(Base):

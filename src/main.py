@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CallbackQueryHandler, filters
 from config import TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_USER_ID
-from bot.handlers.meal_handler import handle_meal_log, is_structured_meal_log
+from bot.handlers.meal_handler import handle_meal_log, handle_meal_callback, is_structured_meal_log
 from bot.handlers.photo_handler import handle_photo, handle_photo_callback, handle_product_name_reply
 from bot.handlers.query_handler import handle_query
 from bot.handlers.steady_meal_handler import (
@@ -15,6 +15,7 @@ from bot.handlers.steady_meal_handler import (
     handle_steady_meal_name_reply,
     handle_steady_meal_callback,
 )
+from bot.handlers.edit_handler import handle_edit_grams_reply
 from bot.handlers.unknown_handler import handle_unknown
 from scheduler.tasks import setup_scheduler
 
@@ -28,6 +29,9 @@ async def route_text(update: Update, context) -> None:
     if not update.effective_user or update.effective_user.id != ALLOWED_TELEGRAM_USER_ID:
         return
     text = update.message.text or ""
+    if context.user_data.get("awaiting_edit_grams"):
+        await handle_edit_grams_reply(update, context)
+        return
     if await handle_product_name_reply(update, context):
         return
     if await handle_steady_meal_name_reply(update, context):
@@ -43,6 +47,8 @@ async def route_text(update: Update, context) -> None:
 
 async def route_callback(update: Update, context) -> None:
     if await handle_steady_meal_callback(update, context):
+        return
+    if await handle_meal_callback(update, context):
         return
     await handle_photo_callback(update, context)
 

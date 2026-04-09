@@ -13,7 +13,9 @@ NUTRIENT_FIELDS = [
 QUANTITY_PATTERNS = [
     (r"^(\d+(?:\.\d+)?)\s*(?:גרם|ג׳|g|gr)\s+(.+)$", "g"),
     (r"^(\d+(?:\.\d+)?)\s*(?:מל|מ\"ל|ml)\s+(.+)$", "g"),
-    (r"^(\d+(?:\.\d+)?)\s*(?:כוס)\s+(.+)$", "cup"),
+    (r"^(\d+(?:\.\d+)?)?\s*(?:כוס|כוסות)\s+(.+)$", "cup"),
+    (r"^(\d+(?:\.\d+)?)?\s*(?:כפית|כפיות)\s+(.+)$", "tsp"),   # כפית / כפיות  → 1 tsp ≈ 5 g
+    (r"^(\d+(?:\.\d+)?)?\s*(?:כף|כפות)\s+(.+)$", "tbsp"),    # כף / כפות     → 1 tbsp ≈ 15 g
     (r"^(\d+)\s+(.+)$", "units"),
 ]
 
@@ -30,19 +32,39 @@ def _food_db_item_to_dict(item) -> dict:
     return {f: getattr(item, f, None) for f in fields}
 
 
+_LEADING_HE_CONNECTORS = ("של ", "עם ", "את ")
+
+
+def _strip_leading_connectors(s: str) -> str:
+    s = s.strip()
+    changed = True
+    while changed:
+        changed = False
+        for conn in _LEADING_HE_CONNECTORS:
+            if s.startswith(conn):
+                s = s[len(conn):].strip()
+                changed = True
+                break
+    return s
+
+
 def _extract_quantity(food_name: str) -> tuple[str, float | None]:
     for pattern, unit in QUANTITY_PATTERNS:
         m = re.match(pattern, food_name.strip(), re.IGNORECASE)
         if m:
-            qty = float(m.group(1))
-            term = m.group(2).strip()
+            raw_qty = m.group(1)  # may be None for optional-number patterns
+            term = _strip_leading_connectors(m.group(2))
             if unit == "cup":
-                return term, qty * 240
+                return term, (float(raw_qty) if raw_qty else 1.0) * 240
+            elif unit == "tsp":
+                return term, (float(raw_qty) if raw_qty else 1.0) * 5
+            elif unit == "tbsp":
+                return term, (float(raw_qty) if raw_qty else 1.0) * 15
             elif unit == "units":
                 return term, None
             else:
-                return term, qty
-    return food_name, None
+                return term, float(raw_qty)
+    return _strip_leading_connectors(food_name), None
 
 
 def _scale_to_quantity(result: dict, quantity_g: float | None) -> dict:
@@ -57,7 +79,7 @@ def _scale_to_quantity(result: dict, quantity_g: float | None) -> dict:
     return result
 
 
-async def lookup_food(name: str) -> dict:
+async def lookup_food(name: str, cache: bool = True) -> dict:
     # Step 0: steady meal
     db_item = search_food_db(name)
     if db_item and getattr(db_item, "source", None) == "steady_meal":
@@ -81,7 +103,8 @@ async def lookup_food(name: str) -> dict:
     off_data = await asyncio.to_thread(search_off, search_term)
     if off_data:
         off_data["meal_name"] = name
-        add_food_db_item(off_data)
+        if cache:
+            add_food_db_item(off_data)
         off_data["confidence_score"] = 0.95
         return _scale_to_quantity(off_data, quantity_g)
 
@@ -89,16 +112,18 @@ async def lookup_food(name: str) -> dict:
     usda_data = await asyncio.to_thread(search_usda, search_term)
     if usda_data:
         usda_data["meal_name"] = name
-        add_food_db_item(usda_data)
+        if cache:
+            add_food_db_item(usda_data)
         usda_data["confidence_score"] = 0.95
         return _scale_to_quantity(usda_data, quantity_g)
 
     # Step 4: Claude estimate
-    parsed = await parse_meal_text(name)
+    # If we extracted a quantity, ask Claude for that specific weight so it doesn't guess a generic serving
+    claude_query = f"{quantity_g:.0f} גרם {search_term}" if quantity_g else name
+    parsed = await parse_meal_text(claude_query)
     if parsed:
         item = parsed[0]
-        if not item.get("meal_name"):
-            item["meal_name"] = name
+        item["meal_name"] = name  # always preserve original input (quantity included)
         item["source"] = "claude_estimated"
         item["confidence_score"] = 0.7
         return item

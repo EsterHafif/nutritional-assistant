@@ -58,8 +58,8 @@ async def morning_reminder(bot) -> None:
 
 async def evening_summary(bot) -> None:
     from datetime import date
-    from config import ALLOWED_TELEGRAM_USER_ID, REQUIRED_MEAL_CATEGORIES
-    from database.queries import get_logged_categories_for_date, get_daily_totals
+    from config import ALLOWED_TELEGRAM_USER_ID, REQUIRED_MEAL_CATEGORIES, MEAL_CATEGORIES
+    from database.queries import get_logged_categories_for_date, get_daily_totals, get_meals_for_date
     from ai.claude_client import generate_daily_summary
 
     today = date.today()
@@ -74,12 +74,27 @@ async def evening_summary(bot) -> None:
 
     try:
         totals = get_daily_totals(today)
+        all_meals = get_meals_for_date(today)
     except Exception as e:
         logger.error("evening_summary: DB error fetching totals: %s", e)
         return
 
+    # Group meals by category in canonical order
+    meals_by_category: dict = {}
+    for cat in MEAL_CATEGORIES:
+        items = [
+            {
+                "meal_name": m["meal_name"],
+                "calories": m["calories"],
+                "protein_g": m["protein_g"],
+            }
+            for m in all_meals if m.get("meal_category") == cat
+        ]
+        if items:
+            meals_by_category[cat] = items
+
     try:
-        summary_text = await generate_daily_summary(totals)
+        summary_text = await generate_daily_summary(totals, meals_by_category)
     except Exception as e:
         logger.error("evening_summary: generate_daily_summary failed: %s", e)
         summary_text = (
