@@ -49,10 +49,13 @@ def format_meal_logged(category: str, items: list[dict], lang: str) -> str:
         return "\n".join(lines)
 
 
-def format_daily_totals(totals: dict, lang: str) -> str:
+def format_daily_totals(totals: dict, lang: str, target_date=None) -> str:
+    from datetime import date
     cal = round(totals.get("calories", 0))
     prot = round(totals.get("protein_g", 0))
     bar = progress_bar(cal, 1500)
     if lang == "he":
-        return f"\nסה\"כ היום: {cal} קל' {bar} | חלבון: {prot}g"
-    return f"\nToday total: {cal} kcal {bar} | Protein: {prot}g"
+        label = "אתמול" if (target_date and target_date < date.today()) else "היום"
+        return f"\nסה\"כ {label}: {cal} קל' {bar} | חלבון: {prot}g"
+    label = "Yesterday" if (target_date and target_date < date.today()) else "Today"
+    return f"\n{label} total: {cal} kcal {bar} | Protein: {prot}g"

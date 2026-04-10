@@ -171,3 +171,53 @@ def get_meals_for_date(meal_date: date_type) -> list[dict]:
     with get_session() as s:
         rows = s.query(MealLog).filter(MealLog.meal_date == meal_date).all()
         return [{f: getattr(r, f, None) for f in fields} for r in rows]
+
+
+_HE_DAY_NAMES = {0: "ראשון", 1: "שני", 2: "שלישי", 3: "רביעי", 4: "חמישי", 5: "שישי", 6: "שבת"}
+_NUTRIENT_FIELDS = ["calories", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugar_g", "calcium_mg", "magnesium_mg", "iron_mg"]
+
+
+def get_weekly_data(start_date: date_type, end_date: date_type) -> dict:
+    from datetime import timedelta
+    days = []
+    current = start_date
+    while current <= end_date:
+        totals = get_daily_totals(current)
+        logged_cats = get_logged_categories_for_date(current)
+        ex = get_exercise_for_date(current)
+        weekday = current.isoweekday() % 7  # Sun=0 … Sat=6
+        days.append({
+            "date": current.isoformat(),
+            "day_name_he": _HE_DAY_NAMES[weekday],
+            **totals,
+            "logged_categories": logged_cats,
+            "fully_logged": all(cat in logged_cats for cat in ["בוקר", "צהריים", "ערב"]),
+            "exercise": {
+                "total_minutes": ex.get("total_minutes") or 0,
+                "total_kcal": ex.get("total_kcal") or 0,
+                "activities": [it["activity"] for it in ex.get("items", []) if it.get("activity")],
+            },
+        })
+        current += timedelta(days=1)
+
+    days_with_data = [d for d in days if d.get("calories", 0) > 0]
+    n = len(days_with_data) or 1
+
+    weekly_totals = {f: round(sum(d.get(f) or 0 for d in days), 2) for f in _NUTRIENT_FIELDS}
+    weekly_averages = {f: round(weekly_totals[f] / n, 2) for f in _NUTRIENT_FIELDS}
+
+    exercise_days = [d for d in days if d["exercise"]["total_minutes"] > 0]
+    weekly_exercise = {
+        "sessions": len(exercise_days),
+        "total_minutes": sum(d["exercise"]["total_minutes"] for d in days),
+        "total_kcal": sum(d["exercise"]["total_kcal"] for d in days),
+    }
+
+    return {
+        "days": days,
+        "totals": weekly_totals,
+        "averages": weekly_averages,
+        "days_fully_logged": sum(1 for d in days if d["fully_logged"]),
+        "days_with_any_data": len(days_with_data),
+        "exercise": weekly_exercise,
+    }

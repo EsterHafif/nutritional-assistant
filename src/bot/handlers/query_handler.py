@@ -6,13 +6,22 @@ from telegram.ext import ContextTypes
 
 from config import ALLOWED_TELEGRAM_USER_ID, MEAL_CATEGORIES
 from datetime import date, datetime
-from database.queries import get_meals_for_date, get_recent_conversation, add_conversation_entry, add_meal_log, get_daily_totals
-from ai.claude_client import answer_question, extract_meals_from_conversation, generate_daily_summary
+from database.queries import get_meals_for_date, get_recent_conversation, add_conversation_entry, add_meal_log, get_daily_totals, get_weekly_data
+from ai.claude_client import answer_question, extract_meals_from_conversation, generate_daily_summary, generate_weekly_summary
 
 logger = logging.getLogger(__name__)
 
 HEBREW_CHARS = re.compile(r"[\u0590-\u05FF]")
+_WEEKLY_SUMMARY_KEYWORDS = re.compile(r"שבועי|weekly", re.IGNORECASE)
 _SUMMARY_KEYWORDS = re.compile(r"סיכום|summarize|summary|סכמי|תסכמי", re.IGNORECASE)
+
+
+def _current_week_range():
+    from datetime import timedelta
+    today = date.today()
+    weekday = today.isoweekday() % 7  # Sun=0 … Sat=6
+    start = today - timedelta(days=weekday)
+    return start, today
 
 
 def _build_meal_history(meals: list, recent_convos: list) -> str:
@@ -53,6 +62,27 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         logger.error("get_meals_for_date failed: %s", e)
         meals = []
+
+    # Weekly summary check must come before daily summary check
+    if _WEEKLY_SUMMARY_KEYWORDS.search(question):
+        week_start, week_end = _current_week_range()
+        is_partial = week_end.isoweekday() % 7 != 6  # not Saturday = partial
+        try:
+            weekly_data = get_weekly_data(week_start, week_end)
+        except Exception as e:
+            logger.error("handle_query weekly: get_weekly_data failed: %s", e)
+            weekly_data = {"days": [], "totals": {}, "averages": {}, "days_fully_logged": 0, "days_with_any_data": 0, "exercise": {"sessions": 0, "total_minutes": 0, "total_kcal": 0}}
+        try:
+            answer = await generate_weekly_summary(weekly_data, week_start, week_end, is_partial=is_partial)
+        except Exception as e:
+            logger.error("handle_query weekly: generate_weekly_summary failed: %s", e)
+            answer = "מצטערת, לא הצלחתי ליצור סיכום שבועי כרגע."
+        await update.message.reply_text(answer)
+        try:
+            add_conversation_entry(question, answer)
+        except Exception as e:
+            logger.error("add_conversation_entry failed: %s", e)
+        return
 
     # Route summary requests to the dedicated summary generator
     if _SUMMARY_KEYWORDS.search(question):

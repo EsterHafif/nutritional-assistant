@@ -1,6 +1,6 @@
 import re
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -21,6 +21,11 @@ CATEGORY_PATTERN = re.compile(
 )
 
 HEBREW_CHARS = re.compile(r"[\u0590-\u05FF]")
+_YESTERDAY_RE = re.compile(r"\bאתמול\b")
+
+
+def _detect_target_date(text: str) -> date:
+    return date.today() - timedelta(days=1) if _YESTERDAY_RE.search(text) else date.today()
 
 
 def is_structured_meal_log(text: str) -> bool:
@@ -108,7 +113,7 @@ async def handle_meal_log(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     text = update.message.text or ""
     lang = _detect_lang(text)
-    today = date.today()
+    target_date = _detect_target_date(text)
 
     categories = parse_meal_categories(text)
     if not categories:
@@ -134,8 +139,9 @@ async def handle_meal_log(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             meal_entry: dict = {
                 "meal_name": food_data.get("meal_name") or food_name,
                 "meal_category": category,
-                "meal_date": today,
+                "meal_date": target_date,
                 "meal_time": datetime.now().time(),
+                "food_db_item_id": food_data.get("id"),
                 "calories": food_data.get("calories"),
                 "protein_g": food_data.get("protein_g"),
                 "carbs_g": food_data.get("carbs_g"),
@@ -186,7 +192,8 @@ async def handle_meal_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if not pending:
             await query.edit_message_text("לא נמצאו נתונים.")
             return True
-        today = date.today()
+        target_date = pending[0].get("meal_date") or date.today()
+        is_yesterday = target_date < date.today()
         from collections import defaultdict
         by_cat: dict = defaultdict(list)
         for entry in pending:
@@ -201,11 +208,14 @@ async def handle_meal_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             line = format_meal_logged(cat, items, "he")
             if line:
                 reply_lines.append(line)
-        totals = get_daily_totals(today)
-        reply_lines.append(format_daily_totals(totals, "he"))
-        logged_categories = get_logged_categories_for_date(today)
+        totals = get_daily_totals(target_date)
+        reply_lines.append(format_daily_totals(totals, "he", target_date))
+        logged_categories = get_logged_categories_for_date(target_date)
         if all(cat in logged_categories for cat in REQUIRED_MEAL_CATEGORIES):
-            reply_lines.append("\nכל הארוחות העיקריות נרשמו! אשלח סיכום ב-21:00 🌙")
+            if is_yesterday:
+                reply_lines.append("\nכל הארוחות של אתמול נרשמו! 🌙")
+            else:
+                reply_lines.append("\nכל הארוחות העיקריות נרשמו! אשלח סיכום ב-21:00 🌙")
         await query.edit_message_text("\n\n".join(reply_lines))
         return True
 

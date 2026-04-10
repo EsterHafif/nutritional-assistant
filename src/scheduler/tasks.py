@@ -22,9 +22,50 @@ def setup_scheduler(bot) -> AsyncIOScheduler:
         args=[bot],
         id="evening_summary",
     )
+    scheduler.add_job(
+        weekly_summary,
+        CronTrigger(day_of_week="sat", hour=21, minute=1, timezone=tz),
+        args=[bot],
+        id="weekly_summary",
+    )
     scheduler.start()
-    logger.info("Scheduler started: morning reminder at 09:00, evening summary at 21:00 (Asia/Jerusalem)")
+    logger.info("Scheduler started: morning reminder at 09:00, evening summary at 21:00, weekly summary Sat 21:01 (Asia/Jerusalem)")
     return scheduler
+
+
+async def weekly_summary(bot) -> None:
+    from datetime import date, timedelta
+    from config import ALLOWED_TELEGRAM_USER_ID
+    from database.queries import get_weekly_data
+    from ai.claude_client import generate_weekly_summary
+
+    today = date.today()  # Saturday
+    weekday = today.isoweekday() % 7  # Sat → 6
+    week_start = today - timedelta(days=weekday)  # last Sunday
+    week_end = today
+
+    try:
+        weekly_data = get_weekly_data(week_start, week_end)
+    except Exception as e:
+        logger.error("weekly_summary: DB error: %s", e)
+        return
+
+    try:
+        summary_text = await generate_weekly_summary(weekly_data, week_start, week_end, is_partial=False)
+    except Exception as e:
+        logger.error("weekly_summary: generate_weekly_summary failed: %s", e)
+        totals = weekly_data.get("totals", {})
+        summary_text = (
+            f"סיכום שבועי:\n"
+            f"קלוריות: {round(totals.get('calories', 0))} קל׳\n"
+            f"חלבון: {round(totals.get('protein_g', 0))}גר׳\n"
+            f"ימים מתועדים: {weekly_data.get('days_fully_logged', 0)}/7"
+        )
+
+    try:
+        await bot.send_message(chat_id=ALLOWED_TELEGRAM_USER_ID, text=summary_text)
+    except Exception as e:
+        logger.error("weekly_summary: send_message failed: %s", e)
 
 
 async def morning_reminder(bot) -> None:

@@ -11,6 +11,7 @@ from ai.prompts import (
     system_prompt_qa,
     system_prompt_daily_summary,
     system_prompt_extract_meals,
+    system_prompt_weekly_summary,
     format_exercise_context,
 )
 from database.queries import get_exercise_for_date
@@ -21,10 +22,10 @@ HAIKU = "claude-haiku-4-5-20251001"
 SONNET = "claude-sonnet-4-6"
 
 
-def _create_text_message(system: str, user_text: str, model: str) -> str:
+def _create_text_message(system: str, user_text: str, model: str, max_tokens: int = 1024) -> str:
     response = _client.messages.create(
         model=model,
-        max_tokens=1024,
+        max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user_text}],
     )
@@ -130,6 +131,12 @@ async def extract_meals_from_conversation(conversation: str) -> list[dict]:
     except Exception:
         logger.error("extract_meals_from_conversation failed to parse JSON. Raw: %s", raw[:500])
         return []
+
+
+async def generate_weekly_summary(weekly_data: dict, week_start, week_end, is_partial: bool = False) -> str:
+    system = system_prompt_weekly_summary(week_start, week_end, is_partial=is_partial)
+    user_text = json.dumps(weekly_data, ensure_ascii=False)
+    return await asyncio.to_thread(_create_text_message, system, user_text, SONNET, 2048)
 
 
 async def generate_daily_summary(totals: dict, meals_by_category: dict | None = None) -> str:
