@@ -1,13 +1,22 @@
 import logging
 import re
+import asyncio
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import ALLOWED_TELEGRAM_USER_ID, MEAL_CATEGORIES
 from datetime import date, datetime
-from database.queries import get_meals_for_date, get_recent_conversation, add_conversation_entry, add_meal_log, get_daily_totals, get_weekly_data
-from ai.claude_client import answer_question, extract_meals_from_conversation, generate_daily_summary, generate_weekly_summary
+from database.queries import (
+    get_meals_for_date, get_recent_conversation, add_conversation_entry,
+    add_meal_log, get_daily_totals, get_weekly_data,
+    get_exercise_for_date, get_steady_meals,
+    update_meal_log, delete_meal_log,
+    delete_exercise, update_exercise,
+    delete_food_db_item, insert_exercise,
+)
+from ai.claude_client import answer_with_tools, generate_daily_summary, generate_weekly_summary
+from external_apis import lookup_food as _lookup_food
 
 logger = logging.getLogger(__name__)
 
@@ -24,27 +33,129 @@ def _current_week_range():
     return start, today
 
 
-def _build_meal_history(meals: list, recent_convos: list) -> str:
+def _build_meal_context(meals: list, exercises: dict, steady_meals: list, recent_convos: list) -> str:
     lines = []
 
     if meals:
-        lines.append("Meals logged today:")
+        lines.append("Meals logged today (use meal IDs for edit/delete):")
         for m in meals:
-            cal_str = f"{round(m['calories'])} kcal" if m.get("calories") else "?"
-            prot_str = f"{round(m['protein_g'])}g protein" if m.get("protein_g") else "?"
-            cat = m.get("meal_category") or "unknown category"
-            lines.append(f"  - {m['meal_name']} ({cat}): {cal_str}, {prot_str}")
+            cal = f"{round(m['calories'])} kcal" if m.get("calories") else "?"
+            prot = f", {round(m['protein_g'])}g protein" if m.get("protein_g") else ""
+            cat = m.get("meal_category") or "?"
+            lines.append(f"  - [ID:{m['id']}] {m['meal_name']} ({cat}): {cal}{prot}")
     else:
         lines.append("No meals logged today yet.")
+
+    if exercises and exercises.get("items"):
+        lines.append("\nExercise today (use exercise IDs for delete):")
+        for ex in exercises["items"]:
+            eid = ex.get("id", "?")
+            act = ex.get("activity", "?")
+            dur = f"{ex.get('duration_min', '?')} min" if ex.get("duration_min") else ""
+            cal = f", {ex.get('calories', '?')} kcal" if ex.get("calories") else ""
+            lines.append(f"  - [ID:{eid}] {act}: {dur}{cal}")
+
+    if steady_meals:
+        lines.append("\nSteady meals / ארוחות קבועות (use IDs for delete):")
+        for sm in steady_meals:
+            cal = round(sm.get("calories") or 0)
+            lines.append(f"  - [ID:{sm['id']}] {sm['product_name']} ({cal} kcal)")
 
     if recent_convos:
         lines.append("\nRecent conversation:")
         for conv in reversed(recent_convos):
             lines.append(f"  User: {conv['message_text']}")
             if conv.get("response_text"):
-                lines.append(f"  Bot: {conv['response_text']}")
+                lines.append(f"  Bot: {conv['response_text'][:200]}")
 
     return "\n".join(lines)
+
+
+def _make_tool_executor(today):
+    """Create a tool executor closure that dispatches tool calls to query functions."""
+
+    def executor(tool_name: str, tool_input: dict):
+        try:
+            if tool_name == "add_meal":
+                meal_data = {
+                    "meal_name": tool_input["meal_name"],
+                    "meal_category": tool_input["meal_category"],
+                    "meal_date": today,
+                    "meal_time": datetime.now().time(),
+                    "source": "tool_use",
+                    "confidence_score": tool_input.get("confidence_score", 0.9),
+                }
+                if tool_input.get("meal_date"):
+                    meal_data["meal_date"] = date.fromisoformat(tool_input["meal_date"])
+                for field in ["calories", "protein_g", "carbs_g", "fat_g", "fiber_g",
+                              "sugar_g", "calcium_mg", "iron_mg", "magnesium_mg"]:
+                    if tool_input.get(field) is not None:
+                        meal_data[field] = tool_input[field]
+                meal = add_meal_log(meal_data)
+                return {"success": True, "meal_id": meal.id, "meal_name": meal.meal_name}
+
+            elif tool_name == "update_meal":
+                meal_id = tool_input.pop("meal_id")
+                updates = {k: v for k, v in tool_input.items() if v is not None}
+                success = update_meal_log(meal_id, updates)
+                return {"success": success}
+
+            elif tool_name == "delete_meal":
+                success = delete_meal_log(tool_input["meal_id"])
+                return {"success": success}
+
+            elif tool_name == "lookup_food":
+                result = asyncio.run(_lookup_food(tool_input["food_name"]))
+                if result:
+                    return {
+                        "found": True,
+                        "meal_name": result.get("meal_name", tool_input["food_name"]),
+                        "calories": result.get("calories"),
+                        "protein_g": result.get("protein_g"),
+                        "carbs_g": result.get("carbs_g"),
+                        "fat_g": result.get("fat_g"),
+                        "fiber_g": result.get("fiber_g"),
+                        "sugar_g": result.get("sugar_g"),
+                        "calcium_mg": result.get("calcium_mg"),
+                        "iron_mg": result.get("iron_mg"),
+                        "magnesium_mg": result.get("magnesium_mg"),
+                        "serving_size_g": result.get("serving_size_g"),
+                        "confidence_score": result.get("confidence_score", 0.7),
+                        "source": result.get("source", "unknown"),
+                    }
+                return {"found": False}
+
+            elif tool_name == "add_exercise":
+                from datetime import time as time_type
+                ex_date = date.fromisoformat(tool_input["exercise_date"]) if tool_input.get("exercise_date") else today
+                ex_time = None
+                if tool_input.get("exercise_time"):
+                    parts = tool_input["exercise_time"].split(":")
+                    ex_time = time_type(int(parts[0]), int(parts[1]))
+                success = insert_exercise(
+                    exercise_date=ex_date,
+                    exercise_time=ex_time,
+                    activity=tool_input["activity"],
+                    duration_min=tool_input.get("duration_min"),
+                    calories=tool_input.get("calories"),
+                    source="manual",
+                )
+                return {"success": success}
+
+            elif tool_name == "delete_exercise":
+                success = delete_exercise(tool_input["exercise_id"])
+                return {"success": success}
+
+            elif tool_name == "delete_steady_meal":
+                success = delete_food_db_item(tool_input["steady_meal_id"])
+                return {"success": success}
+
+            return {"error": f"Unknown tool: {tool_name}"}
+        except Exception as e:
+            logger.error("Tool executor error (%s): %s", tool_name, e)
+            return {"error": str(e)}
+
+    return executor
 
 
 async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -117,12 +228,25 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.error("get_recent_conversation failed: %s", e)
         recent_convos = []
 
-    meal_history = _build_meal_history(meals, recent_convos)
+    try:
+        exercises = get_exercise_for_date(today)
+    except Exception as e:
+        logger.error("get_exercise_for_date failed: %s", e)
+        exercises = {}
 
     try:
-        answer = await answer_question(question, meal_history)
+        steady_meals = get_steady_meals()
     except Exception as e:
-        logger.error("answer_question failed: %s", e)
+        logger.error("get_steady_meals failed: %s", e)
+        steady_meals = []
+
+    meal_context = _build_meal_context(meals, exercises, steady_meals, recent_convos)
+    tool_executor = _make_tool_executor(today)
+
+    try:
+        answer = await answer_with_tools(question, meal_context, tool_executor)
+    except Exception as e:
+        logger.error("answer_with_tools failed: %s", e)
         is_hebrew = bool(HEBREW_CHARS.search(question))
         if is_hebrew:
             answer = "מצטערת, לא הצלחתי לעבד את השאלה כרגע."
@@ -135,36 +259,3 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         add_conversation_entry(question, answer)
     except Exception as e:
         logger.error("add_conversation_entry failed: %s", e)
-
-    # Extract and persist any food items that were estimated in this exchange
-    try:
-        conversation_text = f"User: {question}\nAssistant: {answer}"
-        extracted = await extract_meals_from_conversation(conversation_text)
-        if extracted:
-            already_logged_names = {m["meal_name"].strip().lower() for m in meals if m.get("meal_name")}
-            for item in extracted:
-                meal_name = item.get("meal_name", "").strip()
-                if not meal_name:
-                    continue
-                # Skip if this food name is already in today's log (avoid duplicates)
-                if meal_name.lower() in already_logged_names:
-                    continue
-                meal_data = {
-                    "meal_name": meal_name,
-                    "meal_category": item.get("meal_category"),
-                    "meal_date": date.today(),
-                    "meal_time": datetime.now().time(),
-                    "calories": item.get("calories"),
-                    "protein_g": item.get("protein_g"),
-                    "carbs_g": item.get("carbs_g"),
-                    "fat_g": item.get("fat_g"),
-                    "fiber_g": item.get("fiber_g"),
-                    "calcium_mg": item.get("calcium_mg"),
-                    "iron_mg": item.get("iron_mg"),
-                    "source": "estimated",
-                    "confidence_score": item.get("confidence_score", 0.75),
-                }
-                add_meal_log(meal_data)
-                already_logged_names.add(meal_name.lower())
-    except Exception as e:
-        logger.error("extract_meals_from_conversation failed: %s", e)

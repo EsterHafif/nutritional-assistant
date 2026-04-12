@@ -152,6 +152,7 @@ def get_exercise_for_date(target_date: date_type) -> dict:
         )
         items = [
             {
+                "id": r.id,
                 "time": r.exercise_time.strftime("%H:%M") if r.exercise_time else None,
                 "activity": r.activity,
                 "duration_min": r.duration_min,
@@ -162,6 +163,55 @@ def get_exercise_for_date(target_date: date_type) -> dict:
     total_min = sum((it["duration_min"] or 0) for it in items)
     total_kcal = sum((it["calories"] or 0) for it in items)
     return {"total_minutes": total_min, "total_kcal": total_kcal, "items": items}
+
+
+def update_meal_log(meal_id: int, updates: dict) -> bool:
+    with get_session() as s:
+        meal = s.query(MealLog).filter(MealLog.id == meal_id).first()
+        if not meal:
+            return False
+        for key, value in updates.items():
+            if hasattr(MealLog, key) and key != "id":
+                setattr(meal, key, value)
+        return True
+
+
+def delete_meal_log(meal_id: int) -> bool:
+    with get_session() as s:
+        meal = s.query(MealLog).filter(MealLog.id == meal_id).first()
+        if not meal:
+            return False
+        s.delete(meal)
+        return True
+
+
+def delete_exercise(exercise_id: int) -> bool:
+    with get_session() as s:
+        row = s.query(ExerciseLog).filter(ExerciseLog.id == exercise_id).first()
+        if not row:
+            return False
+        s.delete(row)
+        return True
+
+
+def update_exercise(exercise_id: int, updates: dict) -> bool:
+    with get_session() as s:
+        row = s.query(ExerciseLog).filter(ExerciseLog.id == exercise_id).first()
+        if not row:
+            return False
+        for key, value in updates.items():
+            if hasattr(ExerciseLog, key) and key != "id":
+                setattr(row, key, value)
+        return True
+
+
+def delete_food_db_item(item_id: int) -> bool:
+    with get_session() as s:
+        item = s.query(FoodDBItem).filter(FoodDBItem.id == item_id).first()
+        if not item:
+            return False
+        s.delete(item)
+        return True
 
 
 def get_meals_for_date(meal_date: date_type) -> list[dict]:
