@@ -28,9 +28,26 @@ def setup_scheduler(bot) -> AsyncIOScheduler:
         args=[bot],
         id="weekly_summary",
     )
+    scheduler.add_job(
+        fitbit_sync_job,
+        CronTrigger(hour=20, minute=55, timezone=tz),
+        args=[bot],
+        id="fitbit_sync",
+    )
     scheduler.start()
-    logger.info("Scheduler started: morning reminder at 09:00, evening summary at 21:00, weekly summary Sat 21:01 (Asia/Jerusalem)")
+    logger.info("Scheduler started: morning reminder at 09:00, evening summary at 21:00, weekly summary Sat 21:01, fitbit sync at 20:55 (Asia/Jerusalem)")
     return scheduler
+
+
+async def fitbit_sync_job(bot) -> None:
+    from datetime import date
+    import asyncio
+    from external_apis.fitbit import sync_fitbit_activities
+    try:
+        await asyncio.to_thread(sync_fitbit_activities, date.today())
+        logger.info("fitbit_sync_job completed")
+    except Exception as e:
+        logger.error("fitbit_sync_job failed: %s", e)
 
 
 async def weekly_summary(bot) -> None:

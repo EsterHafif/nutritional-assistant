@@ -15,7 +15,7 @@ from ai.prompts import (
     system_prompt_weekly_summary,
     format_exercise_context,
 )
-from database.queries import get_exercise_for_date
+from database.queries import get_exercise_for_date, get_fitbit_stats_for_date
 from datetime import date
 
 _client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -103,21 +103,29 @@ async def analyze_food_image(image_bytes: bytes, caption: str = "", media_type: 
         return {"error": "Could not parse image analysis", "raw": raw}
 
 
-def _todays_exercise_summary() -> dict:
+def _todays_exercise_summary() -> tuple[dict, dict | None]:
+    """Returns (exercise_summary, fitbit_stats). fitbit_stats is None if unavailable."""
     try:
-        return get_exercise_for_date(date.today())
+        ex = get_exercise_for_date(date.today())
     except Exception as e:
         logger.error("failed to load exercise context: %s", e)
-        return {}
+        ex = {}
+    try:
+        fitbit = get_fitbit_stats_for_date(date.today())
+    except Exception as e:
+        logger.error("failed to load fitbit stats: %s", e)
+        fitbit = None
+    return ex, fitbit
 
 
 async def answer_question(question: str, meal_history: str) -> str:
     today = date.today()
-    ex = _todays_exercise_summary()
+    ex, fitbit = _todays_exercise_summary()
+    activity_kcal = (fitbit.get("activity_calories") or 0) if fitbit else (ex.get("total_kcal") or 0)
     system = system_prompt_qa(
         today, meal_history,
-        exercise_context=format_exercise_context(ex),
-        exercise_kcal=ex.get("total_kcal") or 0,
+        exercise_context=format_exercise_context(ex, fitbit),
+        exercise_kcal=activity_kcal,
     )
     return await asyncio.to_thread(_create_text_message, system, question, SONNET)
 
@@ -239,6 +247,44 @@ TOOL_DEFINITIONS = [
             "required": ["steady_meal_id"],
         },
     },
+    {
+        "name": "search_food_db_item",
+        "description": "Search for items in the food database by name. Returns matching items with their IDs and current nutritional values. Use this before update_food_db_item or delete_food_db_item to find the correct item ID.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Product name to search for (Hebrew or English)"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "update_food_db_item",
+        "description": "Update nutritional values or other fields of an existing food database item by ID. Pass null for a field to clear it. Use search_food_db_item first to find the item ID.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "integer", "description": "The food DB item ID"},
+                "product_name": {"type": "string"},
+                "calories": {"type": ["number", "null"]},
+                "protein_g": {"type": ["number", "null"]},
+                "carbs_g": {"type": ["number", "null"]},
+                "fat_g": {"type": ["number", "null"]},
+                "fiber_g": {"type": ["number", "null"]},
+                "sugar_g": {"type": ["number", "null"]},
+                "saturated_fat_g": {"type": ["number", "null"]},
+                "calcium_mg": {"type": ["number", "null"]},
+                "magnesium_mg": {"type": ["number", "null"]},
+                "iron_mg": {"type": ["number", "null"]},
+                "zinc_mg": {"type": ["number", "null"]},
+                "potassium_mg": {"type": ["number", "null"]},
+                "sodium_mg": {"type": ["number", "null"]},
+                "vitamin_d_mcg": {"type": ["number", "null"]},
+                "serving_size_g": {"type": ["number", "null"]},
+            },
+            "required": ["item_id"],
+        },
+    },
 ]
 
 
@@ -285,11 +331,12 @@ def _sync_tool_use_loop(system: str, user_text: str, tool_executor, max_rounds: 
 async def answer_with_tools(question: str, meal_context: str, tool_executor) -> str:
     """Answer a question using Claude with tool use for CRUD operations."""
     today = date.today()
-    ex = _todays_exercise_summary()
+    ex, fitbit = _todays_exercise_summary()
+    activity_kcal = (fitbit.get("activity_calories") or 0) if fitbit else (ex.get("total_kcal") or 0)
     system = system_prompt_qa_with_tools(
         today, meal_context,
-        exercise_context=format_exercise_context(ex),
-        exercise_kcal=ex.get("total_kcal") or 0,
+        exercise_context=format_exercise_context(ex, fitbit),
+        exercise_kcal=activity_kcal,
     )
     return await asyncio.to_thread(_sync_tool_use_loop, system, question, tool_executor)
 
@@ -302,11 +349,12 @@ async def generate_weekly_summary(weekly_data: dict, week_start, week_end, is_pa
 
 async def generate_daily_summary(totals: dict, meals_by_category: dict | None = None) -> str:
     today = date.today()
-    ex = _todays_exercise_summary()
+    ex, fitbit = _todays_exercise_summary()
+    activity_kcal = (fitbit.get("activity_calories") or 0) if fitbit else (ex.get("total_kcal") or 0)
     system = system_prompt_daily_summary(
         today,
-        exercise_context=format_exercise_context(ex),
-        exercise_kcal=ex.get("total_kcal") or 0,
+        exercise_context=format_exercise_context(ex, fitbit),
+        exercise_kcal=activity_kcal,
     )
     payload = {"totals": totals}
     if meals_by_category:

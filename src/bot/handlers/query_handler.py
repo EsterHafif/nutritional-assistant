@@ -13,7 +13,8 @@ from database.queries import (
     get_exercise_for_date, get_steady_meals,
     update_meal_log, delete_meal_log,
     delete_exercise, update_exercise,
-    delete_food_db_item, insert_exercise,
+    delete_food_db_item, update_food_db_item, find_food_db_items, insert_exercise,
+    get_fitbit_stats_for_date,
 )
 from ai.claude_client import answer_with_tools, generate_daily_summary, generate_weekly_summary
 from external_apis import lookup_food as _lookup_food
@@ -21,6 +22,15 @@ from external_apis import lookup_food as _lookup_food
 logger = logging.getLogger(__name__)
 
 HEBREW_CHARS = re.compile(r"[\u0590-\u05FF]")
+
+
+async def _silent_fitbit_sync() -> None:
+    from external_apis.fitbit import sync_fitbit_activities
+    from datetime import date
+    try:
+        await asyncio.to_thread(sync_fitbit_activities, date.today())
+    except Exception as e:
+        logger.error("silent fitbit sync: %s", e)
 _WEEKLY_SUMMARY_KEYWORDS = re.compile(r"שבועי|weekly", re.IGNORECASE)
 _SUMMARY_KEYWORDS = re.compile(r"סיכום|summarize|summary|סכמי|תסכמי", re.IGNORECASE)
 
@@ -33,7 +43,7 @@ def _current_week_range():
     return start, today
 
 
-def _build_meal_context(meals: list, exercises: dict, steady_meals: list, recent_convos: list) -> str:
+def _build_meal_context(meals: list, exercises: dict, steady_meals: list, recent_convos: list, fitbit_stats: dict | None = None) -> str:
     lines = []
 
     if meals:
@@ -60,6 +70,29 @@ def _build_meal_context(meals: list, exercises: dict, steady_meals: list, recent
         for sm in steady_meals:
             cal = round(sm.get("calories") or 0)
             lines.append(f"  - [ID:{sm['id']}] {sm['product_name']} ({cal} kcal)")
+
+    if fitbit_stats:
+        parts = []
+        if fitbit_stats.get("steps"):
+            parts.append(f"Steps: {fitbit_stats['steps']:,}")
+        if fitbit_stats.get("distance_km"):
+            parts.append(f"Distance: {fitbit_stats['distance_km']} km")
+        if fitbit_stats.get("activity_calories"):
+            parts.append(f"Active calories: {fitbit_stats['activity_calories']}")
+        if fitbit_stats.get("resting_hr"):
+            parts.append(f"Resting HR: {fitbit_stats['resting_hr']} bpm")
+        if fitbit_stats.get("sleep_minutes"):
+            h, m = divmod(fitbit_stats["sleep_minutes"], 60)
+            deep = fitbit_stats.get("sleep_deep_min") or 0
+            rem = fitbit_stats.get("sleep_rem_min") or 0
+            eff = fitbit_stats.get("sleep_efficiency")
+            sleep_str = f"Sleep: {h}h {m}m (deep {deep}m, REM {rem}m"
+            if eff:
+                sleep_str += f", efficiency {eff}%"
+            sleep_str += ")"
+            parts.append(sleep_str)
+        if parts:
+            lines.append("\nFitbit today: " + " | ".join(parts))
 
     if recent_convos:
         lines.append("\nRecent conversation:")
@@ -150,6 +183,16 @@ def _make_tool_executor(today):
                 success = delete_food_db_item(tool_input["steady_meal_id"])
                 return {"success": success}
 
+            elif tool_name == "search_food_db_item":
+                items = find_food_db_items(tool_input["name"])
+                return {"items": items, "count": len(items)}
+
+            elif tool_name == "update_food_db_item":
+                item_id = tool_input.pop("item_id")
+                updates = {k: v for k, v in tool_input.items()}
+                success = update_food_db_item(item_id, updates)
+                return {"success": success}
+
             return {"error": f"Unknown tool: {tool_name}"}
         except Exception as e:
             logger.error("Tool executor error (%s): %s", tool_name, e)
@@ -176,6 +219,7 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     # Weekly summary check must come before daily summary check
     if _WEEKLY_SUMMARY_KEYWORDS.search(question):
+        await _silent_fitbit_sync()
         week_start, week_end = _current_week_range()
         is_partial = week_end.isoweekday() % 7 != 6  # not Saturday = partial
         try:
@@ -197,6 +241,7 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     # Route summary requests to the dedicated summary generator
     if _SUMMARY_KEYWORDS.search(question):
+        await _silent_fitbit_sync()
         try:
             totals = get_daily_totals(today)
         except Exception as e:
@@ -240,7 +285,13 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.error("get_steady_meals failed: %s", e)
         steady_meals = []
 
-    meal_context = _build_meal_context(meals, exercises, steady_meals, recent_convos)
+    try:
+        fitbit_stats = get_fitbit_stats_for_date(today)
+    except Exception as e:
+        logger.error("get_fitbit_stats_for_date failed: %s", e)
+        fitbit_stats = None
+
+    meal_context = _build_meal_context(meals, exercises, steady_meals, recent_convos, fitbit_stats)
     tool_executor = _make_tool_executor(today)
 
     try:

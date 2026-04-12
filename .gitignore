@@ -16,3 +16,4 @@ build/
 .vscode/
 plans/*
 docs/*
+data/fitbit_tokens.json

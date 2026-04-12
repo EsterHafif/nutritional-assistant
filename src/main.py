@@ -1,11 +1,16 @@
 import logging
+import re
+import asyncio
 import sys
 import os
+from datetime import date as _date
 sys.path.insert(0, os.path.dirname(__file__))
 
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CallbackQueryHandler, filters
 from config import TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_USER_ID
+
+_FITBIT_RE = re.compile(r"פיטביט|fitbit", re.IGNORECASE)
 from bot.handlers.meal_handler import handle_meal_log, handle_meal_callback, is_structured_meal_log
 from bot.handlers.photo_handler import handle_photo, handle_photo_callback, handle_product_name_reply
 from bot.handlers.query_handler import handle_query
@@ -25,10 +30,71 @@ logging.basicConfig(
 )
 
 
+async def handle_fitbit_sync(update: Update, context) -> None:
+    from external_apis.fitbit import sync_fitbit_activities
+    from database.queries import get_fitbit_stats_for_date
+    await update.message.reply_text("מסנכרנת עם Fitbit... ⌚")
+    result = await asyncio.to_thread(sync_fitbit_activities, _date.today())
+    if result.get("error") == "no_tokens":
+        await update.message.reply_text("לא מוגדר חיבור ל-Fitbit.")
+        return
+    if result.get("error"):
+        await update.message.reply_text("שגיאה בסנכרון עם Fitbit. נסי שוב מאוחר יותר.")
+        return
+
+    lines = []
+
+    # Workout activities
+    inserted = result["inserted"]
+    skipped = result["skipped"]
+    items = result["items"]
+    if inserted > 0:
+        lines.append(f"סונכרנו {inserted} פעילויות:")
+        for it in items:
+            time_str = it["time"].strftime("%H:%M") if it.get("time") else "—"
+            parts = [f"• {time_str} — {it['activity']}"]
+            if it.get("duration_min"):
+                parts.append(f"{it['duration_min']} דק׳")
+            if it.get("calories"):
+                parts.append(f"{it['calories']} קק״ל")
+            lines.append(", ".join(parts))
+        if skipped:
+            lines.append(f"({skipped} כבר היו רשומות)")
+    elif skipped:
+        lines.append("פעילויות כבר רשומות ✓")
+    else:
+        lines.append("לא נמצאו אימונים להיום.")
+
+    # Daily stats
+    stats = get_fitbit_stats_for_date(_date.today())
+    if stats:
+        stat_parts = []
+        if stats.get("steps"):
+            stat_parts.append(f"צעדים: {stats['steps']:,}")
+        if stats.get("distance_km"):
+            stat_parts.append(f"מרחק: {stats['distance_km']} ק״מ")
+        if stats.get("activity_calories"):
+            stat_parts.append(f"קלוריות פעילות: {stats['activity_calories']}")
+        if stats.get("resting_hr"):
+            stat_parts.append(f"דופק מנוחה: {stats['resting_hr']} bpm")
+        if stats.get("sleep_minutes"):
+            h, m = divmod(stats["sleep_minutes"], 60)
+            deep = stats.get("sleep_deep_min") or 0
+            rem = stats.get("sleep_rem_min") or 0
+            stat_parts.append(f"שינה: {h}ש׳ {m}דק׳ (עמוקה {deep}דק׳, REM {rem}דק׳)")
+        if stat_parts:
+            lines.append("\n" + " | ".join(stat_parts))
+
+    await update.message.reply_text("\n".join(lines))
+
+
 async def route_text(update: Update, context) -> None:
     if not update.effective_user or update.effective_user.id != ALLOWED_TELEGRAM_USER_ID:
         return
     text = update.message.text or ""
+    if _FITBIT_RE.search(text):
+        await handle_fitbit_sync(update, context)
+        return
     if context.user_data.get("awaiting_edit_grams"):
         await handle_edit_grams_reply(update, context)
         return

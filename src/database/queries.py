@@ -1,8 +1,8 @@
-from datetime import date as date_type
+from datetime import date as date_type, datetime
 from typing import Optional
 from sqlalchemy import case, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from .models import FoodDBItem, MealLog, ConversationHistory, ExerciseLog
+from .models import FoodDBItem, MealLog, ConversationHistory, ExerciseLog, FitbitDailyStats
 from .db import get_session
 
 
@@ -214,6 +214,59 @@ def delete_food_db_item(item_id: int) -> bool:
         return True
 
 
+def upsert_fitbit_daily_stats(stat_date: date_type, data: dict) -> None:
+    """Insert or update fitbit daily stats for a date."""
+    with get_session() as s:
+        stmt = pg_insert(FitbitDailyStats).values(stat_date=stat_date, **data)
+        update_cols = {k: stmt.excluded[k] for k in data}
+        update_cols["updated_at"] = datetime.utcnow()
+        stmt = stmt.on_conflict_do_update(index_elements=["stat_date"], set_=update_cols)
+        s.execute(stmt)
+
+
+def get_fitbit_stats_for_date(target_date: date_type) -> dict | None:
+    """Return fitbit daily stats dict for target_date, or None if not available."""
+    fields = [
+        "steps", "resting_hr", "activity_calories", "calories_out",
+        "lightly_active_min", "fairly_active_min", "very_active_min",
+        "sedentary_min", "distance_km", "sleep_minutes", "sleep_deep_min",
+        "sleep_light_min", "sleep_rem_min", "sleep_efficiency",
+        "sleep_start", "sleep_end",
+    ]
+    with get_session() as s:
+        row = s.query(FitbitDailyStats).filter(FitbitDailyStats.stat_date == target_date).first()
+        if not row:
+            return None
+        return {f: getattr(row, f, None) for f in fields}
+
+
+def update_food_db_item(item_id: int, updates: dict) -> bool:
+    with get_session() as s:
+        item = s.query(FoodDBItem).filter(FoodDBItem.id == item_id).first()
+        if not item:
+            return False
+        for key, value in updates.items():
+            if hasattr(FoodDBItem, key) and key not in ("id", "created_at"):
+                setattr(item, key, value)
+        return True
+
+
+def find_food_db_items(name: str, limit: int = 5) -> list[dict]:
+    """Search food_db_items by name and return dicts with id and key fields."""
+    fields = ["id", "product_name", "brand", "source", "calories", "protein_g",
+              "carbs_g", "fat_g", "fiber_g", "sugar_g", "saturated_fat_g",
+              "serving_size_g", "values_per",
+              "calcium_mg", "magnesium_mg", "iron_mg", "zinc_mg",
+              "potassium_mg", "sodium_mg", "phosphorus_mg",
+              "vitamin_a_mcg", "vitamin_c_mg", "vitamin_d_mcg",
+              "vitamin_b12_mcg", "folate_mcg"]
+    with get_session() as s:
+        rows = s.query(FoodDBItem).filter(
+            FoodDBItem.product_name.ilike(f"%{name}%")
+        ).limit(limit).all()
+        return [{f: getattr(r, f, None) for f in fields} for r in rows]
+
+
 def get_meals_for_date(meal_date: date_type) -> list[dict]:
     fields = ["id", "meal_name", "meal_category", "meal_date", "meal_time",
               "calories", "protein_g", "carbs_g", "fat_g", "fiber_g",
@@ -235,6 +288,7 @@ def get_weekly_data(start_date: date_type, end_date: date_type) -> dict:
         totals = get_daily_totals(current)
         logged_cats = get_logged_categories_for_date(current)
         ex = get_exercise_for_date(current)
+        fitbit = get_fitbit_stats_for_date(current)
         weekday = current.isoweekday() % 7  # Sun=0 … Sat=6
         days.append({
             "date": current.isoformat(),
@@ -246,6 +300,14 @@ def get_weekly_data(start_date: date_type, end_date: date_type) -> dict:
                 "total_minutes": ex.get("total_minutes") or 0,
                 "total_kcal": ex.get("total_kcal") or 0,
                 "activities": [it["activity"] for it in ex.get("items", []) if it.get("activity")],
+            },
+            "fitbit": {
+                "steps": fitbit.get("steps") if fitbit else None,
+                "sleep_minutes": fitbit.get("sleep_minutes") if fitbit else None,
+                "sleep_deep_min": fitbit.get("sleep_deep_min") if fitbit else None,
+                "sleep_rem_min": fitbit.get("sleep_rem_min") if fitbit else None,
+                "resting_hr": fitbit.get("resting_hr") if fitbit else None,
+                "activity_calories": fitbit.get("activity_calories") if fitbit else None,
             },
         })
         current += timedelta(days=1)
@@ -263,6 +325,14 @@ def get_weekly_data(start_date: date_type, end_date: date_type) -> dict:
         "total_kcal": sum(d["exercise"]["total_kcal"] for d in days),
     }
 
+    fitbit_days = [d for d in days if d["fitbit"].get("steps") is not None]
+    n_fitbit = len(fitbit_days) or 1
+    fitbit_weekly = {
+        "avg_steps": round(sum(d["fitbit"]["steps"] or 0 for d in fitbit_days) / n_fitbit) if fitbit_days else None,
+        "avg_sleep_minutes": round(sum(d["fitbit"]["sleep_minutes"] or 0 for d in fitbit_days) / n_fitbit) if fitbit_days else None,
+        "avg_resting_hr": round(sum(d["fitbit"]["resting_hr"] or 0 for d in fitbit_days) / n_fitbit) if fitbit_days else None,
+    }
+
     return {
         "days": days,
         "totals": weekly_totals,
@@ -270,4 +340,5 @@ def get_weekly_data(start_date: date_type, end_date: date_type) -> dict:
         "days_fully_logged": sum(1 for d in days if d["fully_logged"]),
         "days_with_any_data": len(days_with_data),
         "exercise": weekly_exercise,
+        "fitbit_weekly": fitbit_weekly,
     }

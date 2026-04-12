@@ -127,14 +127,25 @@ If image_type == "other", return:
 """
 
 
-def format_exercise_context(summary: dict) -> str:
-    """Format today's exercise summary as a single Hebrew context line. Empty string if none."""
-    if not summary or not summary.get("items"):
-        return ""
-    total_min = summary.get("total_minutes") or 0
-    total_kcal = summary.get("total_kcal") or 0
-    activities = ", ".join(it["activity"] for it in summary["items"] if it.get("activity"))
-    return f"פעילות גופנית היום: {total_min} דק׳, {total_kcal} קק״ל ({activities})."
+def format_exercise_context(summary: dict, fitbit_stats: dict | None = None) -> str:
+    """Format today's exercise + Fitbit stats as Hebrew context lines."""
+    lines = []
+    if summary and summary.get("items"):
+        total_min = summary.get("total_minutes") or 0
+        total_kcal = summary.get("total_kcal") or 0
+        activities = ", ".join(it["activity"] for it in summary["items"] if it.get("activity"))
+        lines.append(f"פעילות גופנית היום: {total_min} דק׳, {total_kcal} קק״ל ({activities}).")
+    if fitbit_stats:
+        if fitbit_stats.get("steps"):
+            lines.append(f"צעדים היום: {fitbit_stats['steps']:,}.")
+        if fitbit_stats.get("sleep_minutes"):
+            h, m = divmod(fitbit_stats["sleep_minutes"], 60)
+            deep = fitbit_stats.get("sleep_deep_min") or 0
+            rem = fitbit_stats.get("sleep_rem_min") or 0
+            lines.append(f"שינה אמש: {h}ש׳ {m}דק׳ (עמוקה {deep}דק׳, REM {rem}דק׳).")
+        if fitbit_stats.get("resting_hr"):
+            lines.append(f"דופק במנוחה: {fitbit_stats['resting_hr']} bpm.")
+    return "\n".join(lines)
 
 
 def system_prompt_qa(today: date, meal_history: str, exercise_context: str = "", exercise_kcal: int = 0) -> str:
@@ -192,12 +203,13 @@ Always use feminine Hebrew grammar (לשון נקבה). Address her as Ester.
 The report covers {start_str}–{end_str}.
 
 You will receive a JSON object with:
-- "days": array of daily data (date, day_name_he, nutrient totals, logged_categories, fully_logged, exercise: {{total_minutes, total_kcal, activities}})
+- "days": array of daily data (date, day_name_he, nutrient totals, logged_categories, fully_logged, exercise: {{total_minutes, total_kcal, activities}}, fitbit: {{steps, sleep_minutes, sleep_deep_min, sleep_rem_min, resting_hr, activity_calories}})
 - "totals": weekly nutrient totals
 - "averages": daily averages
 - "days_fully_logged": int
 - "days_with_any_data": int
 - "exercise": {{sessions, total_minutes, total_kcal}} — weekly exercise summary
+- "fitbit_weekly": {{avg_steps, avg_sleep_minutes, avg_resting_hr}} — weekly Fitbit averages (may be null if no data)
 
 Format the summary exactly as follows:
 
@@ -205,12 +217,14 @@ Format the summary exactly as follows:
 
 **ימים מתועדים:** [days_fully_logged] / [total days in range]
 **אימונים השבוע:** [exercise.sessions] / 3 (יעד רך) — [exercise.total_minutes] דק׳ | [exercise.total_kcal] קק״ל
+[If fitbit_weekly.avg_steps is not null:] **Fitbit ממוצע יומי:** [avg_steps] צעדים | שינה [avg_sleep_h]ש׳[avg_sleep_m]דק׳ | דופק מנוחה [avg_resting_hr] bpm
 
 ---
 
 **סיכום יומי:**
 [For each day with any data, one line:]
-[day_name_he] [date DD.MM] — [calories] קל׳ | חלבון [protein_g]גר׳ | פחמימות [carbs_g]גר׳ | שומן [fat_g]גר׳ [🏃 if exercise.total_minutes > 0] [✅ if fully_logged else ⚠️]
+[day_name_he] [date DD.MM] — [calories] קל׳ | חלבון [protein_g]גר׳ | פחמימות [carbs_g]גר׳ | שומן [fat_g]גר׳ [🏃 if exercise.total_minutes > 0] [👟 if fitbit.steps >= 8000] [✅ if fully_logged else ⚠️]
+[If fitbit data available for this day, add indented sub-line:] ↳ [steps] צעדים | שינה [sleep_h]ש׳[sleep_m]דק׳ (עמוקה [deep]דק׳, REM [rem]דק׳)
 
 ---
 
@@ -237,13 +251,16 @@ Format the summary exactly as follows:
  - Comparison to weekly targets: calories = 10,500 קל׳ (7 × 1,500), protein = 700גר׳ (7 × 100גר׳)
  - Micronutrient flags vs weekly RDAs: iron 126מ״ג (7×18), calcium 7,000מ״ג (7×1,000), magnesium 2,170מ״ג (7×310)
  - Exercise: if sessions >= 3 celebrate warmly; if < 3 on a full week gently encourage; if partial week note progress toward the 3-session goal
- - One actionable, encouraging suggestion for next week (may combine nutrition + exercise)
+ - Sleep patterns if available: note avg sleep, highlight good deep/REM sleep or flag low sleep nights
+ - One actionable, encouraging suggestion for next week (may combine nutrition + exercise + sleep)
  - Never guilt-trip. Be warm, specific, and genuinely insightful.]
 
 Rules:
 - Use ONLY Hebrew units: קל׳ for calories, גר׳ for grams, מ״ג for mg, דק׳ for minutes, קק״ל for exercise kcal.
-- If days_with_any_data == 0: skip the per-day table and totals block entirely; write only a gentle warm message that no data was recorded this week and encourage logging next week. Still include the exercise line if sessions > 0.
+- If days_with_any_data == 0: skip the per-day table and totals block entirely; write only a gentle warm message that no data was recorded this week and encourage logging next week. Still include the exercise and Fitbit lines if data exists.
 - Round calories and minutes to 0 decimal places; all other nutrients to 1 decimal place.
+- For sleep hours: convert sleep_minutes → h and m (e.g. 446 min = 7ש׳ 26דק׳).
+- Omit the Fitbit sub-line for days where fitbit.steps is null.
 - Write entirely in Hebrew.
 - Address Ester by name at least once in the insights section."""
 
@@ -267,6 +284,7 @@ Tool usage rules:
 - When Ester mentions eating something casually (not as a question, but telling you she ate something), use lookup_food + add_meal to log it.
 - For exercises: use add_exercise or delete_exercise as needed.
 - For steady meals: use delete_steady_meal to remove one.
+- For food database items (products in the food DB, not the meal log): use search_food_db_item to find the item, then update_food_db_item to correct values or delete_food_db_item to remove it. Pass null to clear a field.
 - If the user is just asking a question (not requesting a change or telling you she ate something), answer normally without using tools.
 - After performing an action, confirm what you did briefly in Hebrew.
 - If Ester tells you she ate multiple items, look up and add each one separately.
@@ -300,14 +318,15 @@ Format the summary exactly as follows:
 
 ---
 
-[2-3 warm sentences: highlight what went well, gently note any low nutrients vs female RDAs (iron 18mg, calcium 1000mg, magnesium 310mg), briefly credit exercise if provided]
+[2-3 warm sentences: highlight what went well, gently note any low nutrients vs female RDAs (iron 18mg, calcium 1000mg, magnesium 310mg), briefly credit exercise/steps/sleep if provided in context]
 
 Rules:
-- Use ONLY Hebrew units: קל' for calories (never kcal), גר' for grams (never g).
+- Use ONLY Hebrew units: קל' for calories (never kcal), גר' for grams (never g), דק׳ for minutes.
 - Category labels in Hebrew: בוקר → ארוחת בוקר, ביניים → ביניים, צהריים → ארוחת צהריים, אחר הצהריים → אחר הצהריים, ערב → ארוחת ערב.
 - Choose food emojis that match each item.
 - If a nutrient value is null or 0 for an item, omit it from that item's line.
 - Address Ester by name at least once.
-- If exercise context is provided, briefly credit her effort (one short sentence). If she did not exercise today, do NOT mention it.
+- If exercise or steps context is provided, briefly credit her effort (one short sentence). If no activity data, do NOT mention it.
+- If sleep context is provided, you may briefly note it (e.g. sleep quality affects appetite and energy).
 - Never guilt-trip. Be warm and supportive.
 - Write entirely in Hebrew."""

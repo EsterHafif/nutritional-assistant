@@ -3,6 +3,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
 
+
+
 Base = declarative_base()
 
 
@@ -79,6 +81,31 @@ class ExerciseLog(Base):
         UniqueConstraint("exercise_date", "exercise_time", "activity", name="uq_exercise_dedupe"),
         Index("ix_exercise_log_date", "exercise_date"),
     )
+
+
+class FitbitDailyStats(Base):
+    __tablename__ = "fitbit_daily_stats"
+    id = Column(Integer, primary_key=True)
+    stat_date = Column(Date, nullable=False, unique=True)
+    steps = Column(Integer)
+    resting_hr = Column(Integer)
+    activity_calories = Column(Integer)
+    calories_out = Column(Integer)
+    lightly_active_min = Column(Integer)
+    fairly_active_min = Column(Integer)
+    very_active_min = Column(Integer)
+    sedentary_min = Column(Integer)
+    distance_km = Column(Float)
+    sleep_minutes = Column(Integer)
+    sleep_deep_min = Column(Integer)
+    sleep_light_min = Column(Integer)
+    sleep_rem_min = Column(Integer)
+    sleep_efficiency = Column(Integer)
+    sleep_start = Column(Time)
+    sleep_end = Column(Time)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (Index("ix_fitbit_daily_stats_date", "stat_date"),)
 
 
 class ConversationHistory(Base):
